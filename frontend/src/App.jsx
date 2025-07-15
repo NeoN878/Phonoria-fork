@@ -9,6 +9,7 @@ function App() {
   return (
     <>
       <h1 className='text-3xl'>{ENV.API_URL}</h1>
+      <h2>hello world</h2>
       <p className='bg-amber-200'>dynamic enviroment variable</p>
       <Card />
     </>
