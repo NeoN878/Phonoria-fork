@@ -251,11 +251,37 @@ jobs:
               }]
             }' > payload.json
 
+          # Also create a simple test payload for debugging
+          echo '{"content":"🔧 Test message from GitHub Actions workflow"}' > test_payload.json
+
           # Debug: show the generated JSON
           echo "Generated JSON payload:"
           cat payload.json
+          
+          # Test with simple payload first
+          echo "Testing with simple message..."
+          curl -s -H "Content-Type: application/json" \
+               -X POST \
+               -d @test_payload.json \
+               "$DISCORD_WEBHOOK_URL"
 
-          curl -H "Content-Type: application/json" \
+          # Send to Discord with verbose output and response capture
+          echo "Sending to Discord webhook..."
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}\nRESPONSE_TIME:%{time_total}" \
+               -H "Content-Type: application/json" \
                -X POST \
                -d @payload.json \
-               "$DISCORD_WEBHOOK_URL"
+               "$DISCORD_WEBHOOK_URL")
+          
+          echo "Discord API Response:"
+          echo "$RESPONSE"
+          
+          # Extract HTTP status code
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          
+          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Successfully sent to Discord (HTTP $HTTP_CODE)"
+          else
+            echo "❌ Failed to send to Discord (HTTP $HTTP_CODE)"
+            echo "Full response: $RESPONSE"
+          fi
