@@ -11,29 +11,101 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Extract commit info
+      - name: Extract commit and deployment info
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           COMMIT_SHA="${{ github.event.deployment.sha }}"
           echo "COMMIT_SHA=${COMMIT_SHA}" >> $GITHUB_ENV
 
-          # Try to get info from deployment payload first
+          # Get deployment info
           DEPLOYMENT_REF="${{ github.event.deployment.ref }}"
           DEPLOYMENT_DESC="${{ github.event.deployment.description }}"
+          DEPLOYMENT_ENV="${{ github.event.deployment.environment }}"
           
-          # Extract branch from deployment ref
-          BRANCH=${DEPLOYMENT_REF#refs/heads/}
-          if [ -z "$BRANCH" ] || [ "$BRANCH" = "$DEPLOYMENT_REF" ]; then
-            BRANCH="feat/frontend"  # fallback to expected branch
+          echo "Debug - Raw deployment info:"
+          echo "DEPLOYMENT_REF: $DEPLOYMENT_REF"
+          echo "DEPLOYMENT_DESC: $DEPLOYMENT_DESC"
+          echo "DEPLOYMENT_ENV: $DEPLOYMENT_ENV"
+          
+          # Method 1: Try to extract branch from deployment ref (most reliable for current deployment)
+          BRANCH=""
+          if [[ "$DEPLOYMENT_REF" == refs/heads/* ]]; then
+            BRANCH=${DEPLOYMENT_REF#refs/heads/}
+            echo "Branch detected from DEPLOYMENT_REF: $BRANCH"
           fi
           
-          # Try to get commit info using git commands after checkout
+          # Method 2: If ref doesn't give us branch, try deployment environment
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = "$DEPLOYMENT_REF" ]; then
+            # Check if environment contains branch info
+            if [[ "$DEPLOYMENT_ENV" == *"feat-patch"* ]] || [[ "$DEPLOYMENT_ENV" == *"feat/patch"* ]]; then
+              BRANCH="feat/patch"
+              echo "Branch detected from environment (feat/patch): $BRANCH"
+            elif [[ "$DEPLOYMENT_ENV" == *"feat-frontend"* ]] || [[ "$DEPLOYMENT_ENV" == *"feat/frontend"* ]]; then
+              BRANCH="feat/frontend"
+              echo "Branch detected from environment (feat/frontend): $BRANCH"
+            elif [[ "$DEPLOYMENT_ENV" == *"main"* ]] || [[ "$DEPLOYMENT_ENV" == "production"* ]]; then
+              BRANCH="main"
+              echo "Branch detected from environment (main): $BRANCH"
+            fi
+          fi
+          
+          # Method 3: Try deployment description
+          if [ -z "$BRANCH" ]; then
+            if [[ "$DEPLOYMENT_DESC" == *"feat/patch"* ]]; then
+              BRANCH="feat/patch"
+              echo "Branch detected from description (feat/patch): $BRANCH"
+            elif [[ "$DEPLOYMENT_DESC" == *"feat/frontend"* ]]; then
+              BRANCH="feat/frontend"
+              echo "Branch detected from description (feat/frontend): $BRANCH"
+            elif [[ "$DEPLOYMENT_DESC" == *"main"* ]]; then
+              BRANCH="main"
+              echo "Branch detected from description (main): $BRANCH"
+            fi
+          fi
+          
+          # Method 4: For Vercel, try to get the actual deployed branch from API
+          if [ -z "$BRANCH" ]; then
+            echo "Trying to get current branches containing this commit..."
+            # Get all branches that contain this commit
+            BRANCHES=$(gh api "repos/${{ github.repository }}/commits/${COMMIT_SHA}/branches-where-head" --jq -r '.[].name' 2>/dev/null || echo "")
+            echo "Branches containing commit: $BRANCHES"
+            
+            # Priority order: main > feat/patch > feat/frontend > others
+            if echo "$BRANCHES" | grep -q "^main$"; then
+              BRANCH="main"
+              echo "Branch selected: main (priority)"
+            elif echo "$BRANCHES" | grep -q "^feat/patch$"; then
+              BRANCH="feat/patch"
+              echo "Branch selected: feat/patch (priority)"
+            elif echo "$BRANCHES" | grep -q "^feat/frontend$"; then
+              BRANCH="feat/frontend"
+              echo "Branch selected: feat/frontend"
+            else
+              # Take the first branch if available
+              BRANCH=$(echo "$BRANCHES" | head -n1)
+              echo "Branch selected: $BRANCH (first available)"
+            fi
+          fi
+          
+          # Method 5: Last resort - try to get the default branch or unknown
+          if [ -z "$BRANCH" ]; then
+            echo "Could not determine branch, using fallback detection..."
+            # If deployment is to production environment, assume main
+            if [[ "$DEPLOYMENT_ENV" == "production"* ]] || [[ "$DEPLOYMENT_ENV" == "" ]]; then
+              BRANCH="main"
+              echo "Fallback: production deployment assumed to be main"
+            else
+              BRANCH="unknown"
+              echo "Fallback: could not determine branch"
+            fi
+          fi
+          
+          # Get commit info
           if git show --format="%an" -s HEAD >/dev/null 2>&1; then
             AUTHOR=$(git show --format="%an" -s HEAD)
             RAW_MESSAGE=$(git show --format="%s" -s HEAD)
           else
-            # Fallback to API if git commands fail
             echo "Git commands failed, trying API..."
             AUTHOR=$(gh api "repos/${{ github.repository }}/commits/${COMMIT_SHA}" --jq -r '.commit.author.name // "Unknown"' 2>/dev/null || echo "Unknown")
             RAW_MESSAGE=$(gh api "repos/${{ github.repository }}/commits/${COMMIT_SHA}" --jq -r '.commit.message // "No message"' 2>/dev/null || echo "No message")
@@ -53,31 +125,26 @@ jobs:
           echo "$MESSAGE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           
-          # Debug output
-          echo "Debug info:"
+          # Final debug output
+          echo "Final values:"
           echo "COMMIT_SHA: $COMMIT_SHA"
-          echo "DEPLOYMENT_REF: $DEPLOYMENT_REF" 
-          echo "DEPLOYMENT_DESC: $DEPLOYMENT_DESC"
           echo "AUTHOR: $AUTHOR"
           echo "BRANCH: $BRANCH"
           echo "MESSAGE: $MESSAGE"
 
-      - name: Skip if branch contains feat/patch or is main
-        if: contains(env.BRANCH, 'feat/patch') || env.BRANCH == 'main'
+      - name: Skip if branch is not one of the monitored branches
         run: |
-          echo "Skipping workflow for branch ${{ env.BRANCH }} - feat/patch and main deployments are excluded"
-          exit 0
-
-      - name: Skip if branch is not feat/frontend
-        if: env.BRANCH != 'feat/frontend' && !contains(env.BRANCH, 'feat/patch') && env.BRANCH != 'main'
-        run: |
-          echo "Skipping workflow for branch ${{ env.BRANCH }} - only feat/frontend deployments are notified"
-          exit 0
+          if [[ "${{ env.BRANCH }}" != "feat/frontend" && "${{ env.BRANCH }}" != "feat/patch" && "${{ env.BRANCH }}" != "main" ]]; then
+            echo "Skipping workflow for branch ${{ env.BRANCH }} - only feat/frontend, feat/patch, and main deployments are monitored"
+            exit 0
+          fi
+          echo "Proceeding with notification for branch: ${{ env.BRANCH }}"
 
       - name: Send to Discord
-        if: env.BRANCH == 'feat/frontend' && !contains(env.BRANCH, 'feat/patch') && env.BRANCH != 'main'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DEPLOYMENT_ENV: ${{ github.event.deployment.environment }}
+        if: env.BRANCH == 'feat/frontend' || env.BRANCH == 'feat/patch' || env.BRANCH == 'main'
         run: |
           STATUS="${{ github.event.deployment_status.state }}"
           ENVIRONMENT="${{ github.event.deployment.environment }}"
