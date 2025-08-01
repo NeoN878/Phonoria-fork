@@ -251,19 +251,9 @@ jobs:
               }]
             }' > payload.json
 
-          # Also create a simple test payload for debugging
-          echo '{"content":"🔧 Test message from GitHub Actions workflow"}' > test_payload.json
-
           # Debug: show the generated JSON
           echo "Generated JSON payload:"
           cat payload.json
-          
-          # Test with simple payload first
-          echo "Testing with simple message..."
-          curl -s -H "Content-Type: application/json" \
-               -X POST \
-               -d @test_payload.json \
-               "$DISCORD_WEBHOOK_URL"
 
           # Send to Discord with verbose output and response capture
           echo "Sending to Discord webhook..."
